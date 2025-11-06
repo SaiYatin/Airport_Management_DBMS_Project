@@ -1,242 +1,192 @@
 // ================================================================
-// FRONTEND API SERVICE - Connects to Backend
+// FRONTEND API SERVICE (SUPER VERSION)
 // File: src/services/api.ts
 // ================================================================
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
 
-// Generic API call function
-async function apiCall(endpoint: string, options: RequestInit = {}) {
-  const url = `${API_BASE_URL}${endpoint}`;
-  
-  const defaultHeaders = {
-    'Content-Type': 'application/json',
-  };
+// ================================================================
+// Type Definitions
+// ================================================================
 
-  const config: RequestInit = {
-    ...options,
-    headers: {
-      ...defaultHeaders,
-      ...options.headers,
-    },
-  };
+export interface ApiResponse<T = any> {
+  data: T;
+  status: number;
+  statusText: string;
+}
 
-  try {
-    const response = await fetch(url, config);
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || data.message || 'API request failed');
-    }
-    
-    return data;
-  } catch (error: any) {
-    console.error(`API Error [${endpoint}]:`, error);
-    throw error;
-  }
+export interface RequestConfig {
+  params?: Record<string, any>;
+  headers?: Record<string, string>;
+  raw?: boolean; // if true, return full Response instead of parsed data
 }
 
 // ================================================================
-// FLIGHT APIs
+// Utility Functions
 // ================================================================
 
+// Build URL with query params
+function buildUrl(endpoint: string, params?: Record<string, any>): string {
+  const url = new URL(`${API_BASE_URL}${endpoint}`);
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        url.searchParams.append(key, String(value));
+      }
+    });
+  }
+  return url.toString();
+}
+
+// Handle API responses safely
+async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    // Non-JSON response fallback
+    data = await response.text();
+  }
+
+  if (!response.ok) {
+    const message =
+      (data && (data.error || data.message)) ||
+      `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  return {
+    data,
+    status: response.status,
+    statusText: response.statusText,
+  };
+}
+
+// ================================================================
+// Core API Client (Axios-like)
+// ================================================================
+
+export const api = {
+  get: async <T = any>(endpoint: string, config?: RequestConfig): Promise<ApiResponse<T>> => {
+    const url = buildUrl(endpoint, config?.params);
+    const headers = { 'Content-Type': 'application/json', ...config?.headers };
+    const response = await fetch(url, { method: 'GET', headers });
+    return handleResponse<T>(response);
+  },
+
+  post: async <T = any>(endpoint: string, body?: any, config?: RequestConfig): Promise<ApiResponse<T>> => {
+    const url = buildUrl(endpoint, config?.params);
+    const headers = { 'Content-Type': 'application/json', ...config?.headers };
+    const response = await fetch(url, { method: 'POST', headers, body: body ? JSON.stringify(body) : undefined });
+    return handleResponse<T>(response);
+  },
+
+  put: async <T = any>(endpoint: string, body?: any, config?: RequestConfig): Promise<ApiResponse<T>> => {
+    const url = buildUrl(endpoint, config?.params);
+    const headers = { 'Content-Type': 'application/json', ...config?.headers };
+    const response = await fetch(url, { method: 'PUT', headers, body: body ? JSON.stringify(body) : undefined });
+    return handleResponse<T>(response);
+  },
+
+  patch: async <T = any>(endpoint: string, body?: any, config?: RequestConfig): Promise<ApiResponse<T>> => {
+    const url = buildUrl(endpoint, config?.params);
+    const headers = { 'Content-Type': 'application/json', ...config?.headers };
+    const response = await fetch(url, { method: 'PATCH', headers, body: body ? JSON.stringify(body) : undefined });
+    return handleResponse<T>(response);
+  },
+
+  delete: async <T = any>(endpoint: string, config?: RequestConfig): Promise<ApiResponse<T>> => {
+    const url = buildUrl(endpoint, config?.params);
+    const headers = { 'Content-Type': 'application/json', ...config?.headers };
+    const response = await fetch(url, { method: 'DELETE', headers });
+    return handleResponse<T>(response);
+  },
+};
+
+// ================================================================
+// Simplified Direct API Function (Compatibility)
+// ================================================================
+
+async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any> {
+  const url = `${API_BASE_URL}${endpoint}`;
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  const response = await fetch(url, { ...options, headers });
+  return handleResponse(response);
+}
+
+// ================================================================
+// DOMAIN APIs
+// ================================================================
+
+// ---------------------- FLIGHTS ----------------------
 export const flightApi = {
-  // Get all flights
   getAll: () => apiCall('/flights'),
-  
-  // Get flight by ID
   getById: (flightNumber: string) => apiCall(`/flights/${flightNumber}`),
-  
-  // Add new flight (calls stored procedure)
-  add: (flightData: {
-    flight_number: string;
-    departure_airport: string;
-    arrival_airport: string;
-    flight_date: string;
-    departure_hour: string;
-    arrival_hour: string;
-    total_seats: number;
-  }) => apiCall('/flights', {
-    method: 'POST',
-    body: JSON.stringify(flightData),
-  }),
-  
-  // Update flight status (calls stored procedure)
-  updateStatus: (flightNumber: string, status: string) => 
-    apiCall(`/flights/${flightNumber}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status }),
-    }),
-  
-  // Get flight occupancy (calls function)
-  getOccupancy: (flightNumber: string) => 
-    apiCall(`/flights/${flightNumber}/occupancy`),
-  
-  // Get available seats (calls function)
-  getAvailableSeats: (flightNumber: string) => 
-    apiCall(`/flights/${flightNumber}/available-seats`),
-  
-  // Get dynamic ticket price (calls function)
-  getPrice: (flightNumber: string, seatClass: string) => 
-    apiCall(`/flights/${flightNumber}/price/${seatClass}`),
-  
-  // Get tickets sold (calls function)
-  getTicketsSold: (flightNumber: string) => 
-    apiCall(`/flights/${flightNumber}/tickets-sold`),
-  
-  // Get flight distance (calls function)
-  getDistance: (departure: string, arrival: string) => 
-    apiCall(`/flights/${departure}/${arrival}/distance`),
+  add: (flightData: any) => apiCall('/flights', { method: 'POST', body: JSON.stringify(flightData) }),
+  updateStatus: (flightNumber: string, status: string) =>
+    apiCall(`/flights/${flightNumber}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  getOccupancy: (flightNumber: string) => apiCall(`/flights/${flightNumber}/occupancy`),
+  getAvailableSeats: (flightNumber: string) => apiCall(`/flights/${flightNumber}/available-seats`),
+  getPrice: (flightNumber: string, seatClass: string) => apiCall(`/flights/${flightNumber}/price/${seatClass}`),
+  getTicketsSold: (flightNumber: string) => apiCall(`/flights/${flightNumber}/tickets-sold`),
+  getDistance: (departure: string, arrival: string) => apiCall(`/flights/${departure}/${arrival}/distance`),
 };
 
-// ================================================================
-// TICKET APIs
-// ================================================================
-
+// ---------------------- TICKETS ----------------------
 export const ticketApi = {
-  // Get all tickets
   getAll: () => apiCall('/tickets'),
-  
-  // Book ticket (calls stored procedure)
-  book: (ticketData: {
-    order_number: string;
-    passenger_name: string;
-    email: string;
-    phone: string;
-    age: number;
-    seat_class: string;
-    flight_number: string;
-    flight_company_id: string;
-    seat_number: string;
-  }) => apiCall('/tickets/book', {
-    method: 'POST',
-    body: JSON.stringify(ticketData),
-  }),
-  
-  // Cancel ticket (calls stored procedure)
-  cancel: (orderNumber: string, reason: string) => 
-    apiCall(`/tickets/${orderNumber}/cancel`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+  book: (ticketData: any) => apiCall('/tickets/book', { method: 'POST', body: JSON.stringify(ticketData) }),
+  cancel: (orderNumber: string, reason: string) =>
+    apiCall(`/tickets/${orderNumber}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
 };
 
-// ================================================================
-// PASSENGER APIs
-// ================================================================
-
+// ---------------------- PASSENGERS ----------------------
 export const passengerApi = {
-  // Get all passengers
   getAll: () => apiCall('/passengers'),
-  
-  // Get passenger loyalty tier (calls function)
-  getLoyaltyTier: (passengerId: number) => 
-    apiCall(`/passengers/${passengerId}/loyalty`),
+  getLoyaltyTier: (passengerId: number) => apiCall(`/passengers/${passengerId}/loyalty`),
 };
 
-// ================================================================
-// WORKER APIs
-// ================================================================
-
+// ---------------------- WORKERS ----------------------
 export const workerApi = {
-  // Get all workers
   getAll: () => apiCall('/workers'),
-  
-  // Hire worker (calls stored procedure)
-  hire: (workerData: {
-    worker_id: string;
-    name: string;
-    age: number;
-    job: string;
-    payment: number;
-    store_id: string | null;
-    airport_id: string;
-  }) => apiCall('/workers', {
-    method: 'POST',
-    body: JSON.stringify(workerData),
-  }),
-  
-  // Calculate worker earnings (calls function)
-  calculateEarnings: (workerId: string, months: number = 12, bonus: number = 10) => 
+  hire: (workerData: any) => apiCall('/workers', { method: 'POST', body: JSON.stringify(workerData) }),
+  calculateEarnings: (workerId: string, months: number = 12, bonus: number = 10) =>
     apiCall(`/workers/${workerId}/earnings?months=${months}&bonus=${bonus}`),
-  
-  // Check promotion eligibility (calls function)
-  checkPromotion: (workerId: string) => 
-    apiCall(`/workers/${workerId}/promotion`),
+  checkPromotion: (workerId: string) => apiCall(`/workers/${workerId}/promotion`),
 };
 
-// ================================================================
-// AIRPORT APIs
-// ================================================================
-
+// ---------------------- AIRPORTS ----------------------
 export const airportApi = {
-  // Get all airports
   getAll: () => apiCall('/airports'),
-  
-  // Count airport workers (calls function)
-  countWorkers: (airportId: string) => 
-    apiCall(`/airports/${airportId}/workers/count`),
+  countWorkers: (airportId: string) => apiCall(`/airports/${airportId}/workers/count`),
 };
 
-// ================================================================
-// STORE APIs
-// ================================================================
-
+// ---------------------- STORES ----------------------
 export const storeApi = {
-  // Get all stores
   getAll: () => apiCall('/stores'),
-  
-  // Get store performance rating (calls function)
-  getRating: (storeId: string) => 
-    apiCall(`/stores/${storeId}/rating`),
+  getRating: (storeId: string) => apiCall(`/stores/${storeId}/rating`),
 };
 
-// ================================================================
-// FLIGHT COMPANY APIs
-// ================================================================
-
+// ---------------------- FLIGHT COMPANIES ----------------------
 export const flightCompanyApi = {
-  // Get all flight companies
   getAll: () => apiCall('/flight-companies'),
-  
-  // Get company revenue (calls function)
-  getRevenue: (companyId: string) => 
-    apiCall(`/flight-companies/${companyId}/revenue`),
+  getRevenue: (companyId: string) => apiCall(`/flight-companies/${companyId}/revenue`),
 };
 
-// ================================================================
-// REPORT APIs
-// ================================================================
-
+// ---------------------- REPORTS ----------------------
 export const reportApi = {
-  // Generate payroll report (calls stored procedure)
-  generatePayroll: (airportId: string | null) => 
-    apiCall('/reports/payroll', {
-      method: 'POST',
-      body: JSON.stringify({ airport_id: airportId }),
-    }),
-  
-  // Generate flight revenue report (calls stored procedure)
-  generateFlightRevenue: (startDate: string, endDate: string) => 
-    apiCall('/reports/flight-revenue', {
-      method: 'POST',
-      body: JSON.stringify({ start_date: startDate, end_date: endDate }),
-    }),
+  generatePayroll: (airportId: string | null) =>
+    apiCall('/reports/payroll', { method: 'POST', body: JSON.stringify({ airport_id: airportId }) }),
+  generateFlightRevenue: (startDate: string, endDate: string) =>
+    apiCall('/reports/flight-revenue', { method: 'POST', body: JSON.stringify({ start_date: startDate, end_date: endDate }) }),
 };
 
-// ================================================================
-// DASHBOARD APIs
-// ================================================================
-
+// ---------------------- DASHBOARD ----------------------
 export const dashboardApi = {
-  // Get dashboard statistics
   getStats: () => apiCall('/dashboard/stats'),
 };
 
-// ================================================================
-// HEALTH CHECK
-// ================================================================
-
+// ---------------------- HEALTH CHECK ----------------------
 export const healthApi = {
   check: () => apiCall('/health'),
 };
@@ -246,37 +196,11 @@ export const healthApi = {
 // ================================================================
 
 /*
-// Example 1: Get all flights
+// Using the axios-like api object:
+const response = await api.get('/flights');
+console.log(response.data);
+
+// Using the domain APIs:
 const flights = await flightApi.getAll();
-
-// Example 2: Book a ticket (demonstrates stored procedure + trigger)
-const booking = await ticketApi.book({
-  order_number: 'TKT_001',
-  passenger_name: 'John Doe',
-  email: 'john@example.com',
-  phone: '1234567890',
-  age: 30,
-  seat_class: 'economy',
-  flight_number: 'AI101',
-  flight_company_id: 'FC001',
-  seat_number: '12A'
-});
-
-// Example 3: Get flight occupancy (demonstrates function)
-const occupancy = await flightApi.getOccupancy('AI101');
-console.log(`Occupancy: ${occupancy.occupancy}%`);
-
-// Example 4: Calculate dynamic price (demonstrates function)
-const price = await flightApi.getPrice('AI101', 'business');
-console.log(`Price: ₹${price.price}`);
-
-// Example 5: Check worker promotion eligibility (demonstrates function)
-const eligible = await workerApi.checkPromotion('W001');
-console.log(`Eligible for promotion: ${eligible.eligible}`);
-
-// Example 6: Generate payroll report (demonstrates stored procedure)
-const payroll = await reportApi.generatePayroll('BLR');
-
-// Example 7: Cancel ticket (demonstrates stored procedure + multiple triggers)
-const cancellation = await ticketApi.cancel('TKT_005', 'Change of plans');
+const booking = await ticketApi.book({ passenger_id: 1, flight_id: 'AI101' });
 */

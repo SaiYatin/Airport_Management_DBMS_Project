@@ -28,11 +28,12 @@ const BookTicket = () => {
   const [loading, setLoading] = useState(false);
   const [prices, setPrices] = useState<any>({});
   const [passenger, setPassenger] = useState({
-    name: "",
-    email: "",
+    name: user?.name || "",
+    email: user?.email || "",
     phone: "",
-    age: "",
+    age: user?.age?.toString() || "",
   });
+
   const [seatClass, setSeatClass] = useState("");
   const [seatNumber, setSeatNumber] = useState("");
 
@@ -64,12 +65,13 @@ const BookTicket = () => {
         flightService.calculateTicketPrice(flightNumber, "Business"),
         flightService.calculateTicketPrice(flightNumber, "First"),
       ]);
-      
+
       setPrices({
         Economy: economyPrice.price,
         Business: businessPrice.price,
         First: firstPrice.price,
       });
+
     } catch (error) {
       console.error("Error loading prices:", error);
     }
@@ -98,20 +100,22 @@ const BookTicket = () => {
         seat_number: seatNumber,
         seat_class: seatClass,
         ticket_price: prices[seatClass],
+        flight_company_id: selectedFlight.flight_company_id,
       };
 
       const result = await ticketService.bookTicket(bookingData);
       
       toast({
         title: "Booking Successful!",
-        description: `Order Number: ${result.order_number}`,
+        description: `Your ticket has been booked successfully! Order: ${result.order_number || 'Confirmed'}`,
       });
       
-      navigate("/tickets");
+      // Redirect to dashboard instead of /tickets
+      navigate("/dashboard");
     } catch (error: any) {
       toast({
         title: "Booking Failed",
-        description: error.response?.data?.message || "Failed to book ticket",
+        description: error.response?.data?.message || error.response?.data?.error || "Failed to book ticket",
         variant: "destructive",
       });
     } finally {
@@ -210,7 +214,7 @@ const BookTicket = () => {
                   <SelectContent>
                     {flights.map((flight) => (
                       <SelectItem key={flight.flight_number} value={flight.flight_number}>
-                        {flight.flight_number} - {flight.departure_airport_id} → {flight.arrival_airport_id} ({flight.departure_time})
+                        {flight.flight_number} - {flight.departure_airport} → {flight.arrival_airport} ({flight.flight_date})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -226,11 +230,11 @@ const BookTicket = () => {
                     </div>
                     <div>
                       <p className="text-muted-foreground">Route</p>
-                      <p className="font-semibold">{selectedFlight.departure_airport_id} → {selectedFlight.arrival_airport_id}</p>
+                      <p className="font-semibold">{selectedFlight.departure_airport} → {selectedFlight.arrival_airport}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Date</p>
-                      <p className="font-semibold">{selectedFlight.departure_date}</p>
+                      <p className="font-semibold">{selectedFlight.flight_date}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Available Seats</p>

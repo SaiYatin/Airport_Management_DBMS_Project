@@ -34,7 +34,7 @@ const App = () => (
             </ProtectedRoute>
           } />
           <Route path="/book-ticket" element={
-            <ProtectedRoute allowedRoles={["Admin", "Manager", "Staff"]}>
+            <ProtectedRoute allowedRoles={["Admin", "Manager", "Staff", "Passenger"]}>
               <BookTicket />
             </ProtectedRoute>
           } />
