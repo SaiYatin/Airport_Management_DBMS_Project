@@ -146,48 +146,47 @@ app.post('/api/tickets', async (req, res) => {
     seat_number,
     seat_class,
     ticket_price,
-    flight_company_id
+    flight_company_id,
+    passenger_id // ✅ NEW: allow frontend to send logged-in passenger ID
   } = req.body;
 
-  console.log('📋 Booking Request:', {
-    passenger_name,
-    passenger_email,
-    passenger_phone,
-    passenger_age,
-    flight_number,
-    seat_number,
-    seat_class,
-    flight_company_id
-  });
-
   try {
-    // Get or determine flight_company_id
+    let passengerId = passenger_id;
+
+    // ✅ If passenger_id not provided, look it up by email
+    if (!passengerId) {
+      const [existingPassenger] = await pool.query(
+        'SELECT passenger_id FROM Passenger WHERE email = ?',
+        [passenger_email]
+      );
+
+      if (existingPassenger.length > 0) {
+        passengerId = existingPassenger[0].passenger_id;
+      } else {
+        // fallback: create a new passenger (rarely needed)
+        const [result] = await pool.query(
+          'INSERT INTO Passenger (name, email, age) VALUES (?, ?, ?)',
+          [passenger_name, passenger_email, passenger_age]
+        );
+        passengerId = result.insertId;
+      }
+    }
+
+    // ✅ Generate order number
+    const orderNumber = 'TKT' + Date.now().toString().slice(-10);
+
+    // ✅ Determine flight_company_id if missing
     let companyId = flight_company_id;
     if (!companyId) {
       const [flightData] = await pool.query(
         'SELECT flight_company_id FROM Flight WHERE flight_number = ?',
         [flight_number]
       );
-      
-      if (flightData.length > 0 && flightData[0].flight_company_id) {
-        companyId = flightData[0].flight_company_id;
-      } else {
-        const [companies] = await pool.query('SELECT flight_company_id FROM FlightCompany LIMIT 1');
-        if (companies.length > 0) {
-          companyId = companies[0].flight_company_id;
-        } else {
-          throw new Error('No flight company available');
-        }
-      }
+      if (flightData.length > 0) companyId = flightData[0].flight_company_id;
     }
 
-    // Generate order number
-    const orderNumber = 'TKT' + Date.now().toString().slice(-10);
-
-    console.log('🎫 Calling book_ticket stored procedure...');
-
-    // Call the stored procedure
-    const [results] = await pool.query(
+    // ✅ Book ticket using the stored procedure
+    await pool.query(
       'CALL book_ticket(?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         orderNumber,
@@ -201,33 +200,22 @@ app.post('/api/tickets', async (req, res) => {
         seat_number
       ]
     );
-    
-    // Get the passenger_id that was used/created
-    const [ticketData] = await pool.query(
-      'SELECT passenger_id FROM Ticket WHERE order_number = ?',
-      [orderNumber]
-    );
-    
-    const passenger_id = ticketData.length > 0 ? ticketData[0].passenger_id : null;
-    
-    console.log('✅ Ticket booked successfully:', orderNumber);
-    console.log('👤 Passenger ID:', passenger_id);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Ticket booked successfully',
       order_number: orderNumber,
-      passenger_id: passenger_id
+      passenger_id: passengerId
     });
   } catch (error) {
     console.error('❌ Ticket Booking Error:', error.message);
-    res.status(500).json({ 
-      success: false, 
-      message: error.message,
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 });
+
 // Also update the GET /api/flights endpoint to ensure it works correctly
 app.get("/api/flights", async (req, res) => {
   try {
@@ -422,30 +410,6 @@ app.get('/api/tickets', async (req, res) => {
   }
 });
 
-// Book Ticket using stored procedure
-app.post('/api/tickets', async (req, res) => {
-  const {
-    passenger_name,
-    passenger_email,
-    passenger_phone,
-    passenger_age,
-    flight_number,
-    seat_number,
-    seat_class,
-    ticket_price
-  } = req.body;
-
-  try {
-    await pool.query(
-    'CALL book_ticket(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [passenger_name, passenger_email, passenger_phone, passenger_age, flight_number, seat_number, seat_class, ticket_price, flight_company_id]
-  );
-    res.json({ success: true, message: 'Ticket booked successfully' });
-  } catch (error) {
-    console.error('Ticket Booking Error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 // Cancel ticket (calls stored procedure)
 app.post('/api/tickets/:order_number/cancel', async (req, res) => {
@@ -877,3 +841,46 @@ app.get('/api/workers/by-manager/:manager_id', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ================================================================
+// PURCHASE HISTORY ROUTE
+// ================================================================
+
+// Get purchase history for a specific passenger
+app.get("/api/passengers/:id/purchase-history", async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`🧾 Fetching purchase history for passenger_id: ${id}`);
+
+    const [rows] = await pool.query(
+      `
+      SELECT 
+        p.purchase_id,
+        p.order_number,
+        t.flight_number,
+        f.departure_airport,
+        f.arrival_airport,
+        f.flight_date,
+        fc.flight_company_name AS company_name,
+        b.booking_company_name AS booked_via,
+        t.seat_class,
+        t.price,
+        DATE_FORMAT(p.purchase_date, '%d-%b-%Y %H:%i') AS purchased_on
+      FROM Purchase p
+      JOIN Ticket t ON p.order_number = t.order_number
+      JOIN Flight f ON t.flight_number = f.flight_number
+      LEFT JOIN FlightCompany fc ON f.flight_company_id = fc.flight_company_id
+      LEFT JOIN BookingAgent b ON p.supplier_id = b.agent_id
+      WHERE t.passenger_id = ?
+      ORDER BY p.purchase_date DESC
+      `,
+      [id]
+    );
+
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("❌ Error fetching purchase history:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+// ================================================================

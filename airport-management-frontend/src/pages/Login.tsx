@@ -7,9 +7,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import airportHero from "@/assets/airport-hero.jpg";
+import { useAuth } from "@/hooks/useAuth";
+
 
 const Login = () => {
-  const navigate = useNavigate();
+  const navigate = useNavigate(); 
+  const { login } = useAuth();
+
 
   // Form states
   const [email, setEmail] = useState("");
@@ -38,23 +42,17 @@ const Login = () => {
         return;
       }
 
-      // ✅ Extract and store cleanly
-      const extractedUser = {
-        ...data.user,
-        role: data.role ? data.role.toLowerCase() : "passenger",
-      };
-      localStorage.setItem("user", JSON.stringify(extractedUser));
-
       toast.success(`Welcome back, ${data.user.name}!`);
 
-      // ✅ Redirect based on role
-      if (extractedUser.role === "passenger") {
+      // ✅ FIXED: use the context instead of direct localStorage
+      // ✅ Wait for context to update before navigation
+      login(data);
+
+      // ✅ Wait until user is available in context before redirecting
+      setTimeout(() => {
         navigate("/dashboard");
-      } else if (extractedUser.role === "worker" || extractedUser.role === "manager") {
-        navigate("/dashboard");
-      } else {
-        navigate("/dashboard");
-      }
+      }, 400);
+
     } catch (error: any) {
       console.error("Login error:", error);
       toast.error("Server error during login. Please try again later.");
@@ -62,7 +60,6 @@ const Login = () => {
       setLoading(false);
     }
   };
-
 
   // Handle signup request (Passenger only)
   const handleSignup = async (e: React.FormEvent) => {

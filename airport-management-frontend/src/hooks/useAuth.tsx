@@ -48,7 +48,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // ✅ Handle login + store user properly
   const login = (userData: any) => {
-    // Backend sends: { success, user: {...}, role: "Passenger" }
+  // Backend sends: { success, user: {...}, role: "Passenger" }
     let extractedUser = userData.user ? userData.user : userData;
 
     // Attach role if provided outside user object
@@ -60,14 +60,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    setUser(extractedUser);
+    // ✅ Store + update context (no redirect here)
     localStorage.setItem("user", JSON.stringify(extractedUser));
+    setUser(extractedUser);
   };
 
   // ✅ Logout
   const logout = () => {
-    setUser(null);
     localStorage.removeItem("user");
+    setUser(null);
+    window.location.href = "/login";
   };
 
   const isAuthenticated = !!user;

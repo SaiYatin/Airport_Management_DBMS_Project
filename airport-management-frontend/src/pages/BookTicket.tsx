@@ -92,6 +92,7 @@ const BookTicket = () => {
     setLoading(true);
     try {
       const bookingData = {
+        passenger_id: user?.passenger_id, // ✅ use logged-in passenger
         passenger_name: passenger.name,
         passenger_email: passenger.email,
         passenger_phone: passenger.phone,
@@ -102,7 +103,6 @@ const BookTicket = () => {
         ticket_price: prices[seatClass],
         flight_company_id: selectedFlight.flight_company_id,
       };
-
       const result = await ticketService.bookTicket(bookingData);
       
       toast({

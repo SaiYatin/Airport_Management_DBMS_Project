@@ -15,44 +15,51 @@ const DashboardPassenger = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) {
+    // Wait for user to be available
+    if (!user?.passenger_id) {
+      setLoading(false);
       navigate("/login");
       return;
     }
-    loadPassengerData();
-  }, [user]);
 
-  const loadPassengerData = async () => {
-    try {
-      const passengerId = user.passenger_id;
-      
-      console.log('👤 Loading data for passenger:', passengerId);
-      console.log('📧 Email:', user.email);
+    const controller = new AbortController();
+    const signal = controller.signal;
 
-      // Loyalty info
-      const loyaltyRes = await fetch(`http://localhost:3001/api/passengers/${passengerId}/loyalty`);
-      const loyaltyData = await loyaltyRes.json();
-      console.log('🏆 Loyalty response:', loyaltyData);
-      if (loyaltyData.success) setLoyalty(loyaltyData.loyalty_tier);
+    const loadPassengerData = async () => {
+      try {
+        setLoading(true);
 
-      // Bookings
-      const bookingRes = await fetch(
-        `http://localhost:3001/api/passengers/${passengerId}/bookings`
-      );
-      const bookingData = await bookingRes.json();
-      console.log('📋 Bookings response:', bookingData);
-      
-      if (bookingData.success) {
-        setBookings(bookingData.data);
-        console.log(`✅ Loaded ${bookingData.data.length} bookings`);
+        const passengerId = user.passenger_id;
+        console.log("👤 Loading data for passenger:", passengerId);
+
+        // Loyalty info
+        const loyaltyRes = await fetch(`http://localhost:3001/api/passengers/${passengerId}/loyalty`, { signal });
+        const loyaltyData = await loyaltyRes.json();
+        if (loyaltyData.success) setLoyalty(loyaltyData.loyalty_tier);
+
+        // Bookings
+        const bookingRes = await fetch(`http://localhost:3001/api/passengers/${passengerId}/bookings`, { signal });
+        const bookingData = await bookingRes.json();
+        if (bookingData.success) {
+          setBookings(bookingData.data);
+          console.log(`✅ Loaded ${bookingData.data.length} bookings`);
+        }
+      } catch (error: any) {
+        if (error.name === "AbortError") return; // prevents stale update
+        console.error("❌ Error loading passenger data:", error);
+        toast.error("Failed to load passenger data");
+      } finally {
+        setLoading(false);
       }
-    } catch (error: any) {
-      console.error('❌ Error loading passenger data:', error);
-      toast.error("Failed to load passenger data");
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    loadPassengerData();
+
+    // Cleanup: cancel fetches if user changes quickly
+    return () => {
+      controller.abort();
+    };
+  }, [user?.passenger_id]);
 
   const handleLogout = () => {
     localStorage.removeItem("user");
@@ -170,6 +177,48 @@ const DashboardPassenger = () => {
             <p className="text-muted-foreground">
               As a {loyalty || "Standard"} member, you earn discounts on frequent bookings.
             </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Ticket className="h-5 w-5 text-primary" />
+              Purchase History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {bookings.length === 0 ? (
+              <p className="text-muted-foreground">No purchases found.</p>
+            ) : (
+              <div className="space-y-3">
+                {bookings.map((b: any) => (
+                  <div
+                    key={b.order_number}
+                    className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <p className="font-semibold">
+                          Flight {b.flight_number} • {b.company_name}
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {b.departure_airport} → {b.arrival_airport}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Purchased on: {b.purchased_on}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Seat: {b.seat_class} | ₹{b.price.toLocaleString()}
+                        </p>
+                      </div>
+                      <Badge variant="secondary">
+                        {b.booked_via || "Direct"}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </main>

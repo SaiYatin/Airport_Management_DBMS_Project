@@ -14,17 +14,22 @@ const Dashboard = () => {
 
   if (!user) return null;
 
-  if (["Admin", "Manager", "Staff", "Shopkeeper"].includes(user.role)) {
+  // ✅ normalize role
+  const role = user.role?.toLowerCase();
+
+  if (["admin", "manager", "staff", "shopkeeper"].includes(role)) {
     return <DashboardStaff />;
   }
 
-  if (user.role === "Passenger") {
+  if (role === "passenger") {
     return <DashboardPassenger />;
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center text-center">
-      <p className="text-muted-foreground">Unknown role. Please contact administrator.</p>
+      <p className="text-muted-foreground">
+        Unknown role. Please contact administrator.
+      </p>
     </div>
   );
 };
