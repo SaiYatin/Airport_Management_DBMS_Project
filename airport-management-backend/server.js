@@ -38,6 +38,31 @@ pool.getConnection()
     console.error('❌ Database connection failed:', err.message);
   });
 
+  // --- Role-check middleware helpers ---
+function requireRole(role) {
+  return (req, res, next) => {
+    // lightweight: backend expects caller to set header 'x-user-role'
+    const callerRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+    if (!callerRole) {
+      return res.status(401).json({ success: false, message: 'Missing caller role header' });
+    }
+    if (Array.isArray(role)) {
+      if (!role.map(r => r.toLowerCase()).includes(callerRole)) {
+        return res.status(403).json({ success: false, message: 'Forbidden: insufficient privileges' });
+      }
+    } else {
+      if (callerRole !== role.toLowerCase()) {
+        return res.status(403).json({ success: false, message: 'Forbidden: insufficient privileges' });
+      }
+    }
+    // optionally attach callerRole to req for downstream use
+    req.callerRole = callerRole;
+    req.callerId = req.headers['x-user-id'] || null; // optional worker_id or passenger_id
+    next();
+  };
+}
+
+
 // ================================================================
 // AUTHENTICATION ROUTES
 // ================================================================
@@ -94,18 +119,49 @@ app.post('/api/auth/login', async (req, res) => {
         role: 'Passenger',
         message: 'Passenger login successful',
       });
-}
+    }
 
+    // Then check Worker table (login by email)
+    const [workerRows] = await pool.query('SELECT * FROM Worker WHERE email = ?', [email]);
 
-    // Then check Worker table (by name or email column if added later)
-    const [worker] = await pool.query('SELECT * FROM Worker WHERE name = ? OR email = ?', [email, email]);
-    if (worker.length > 0) {
-      const user = worker[0];
-      const role = user.job || 'Worker';
+    if (workerRows.length > 0) {
+      const worker = workerRows[0];
+
+      // ✅ Use the role column from database directly
+      let role = 'worker';
+      
+      // First check if role column exists and is set
+      if (worker.role) {
+        role = worker.role.toLowerCase();
+      } else {
+        // Fallback to job-based detection if role is NULL
+        const job = worker.job ? worker.job.toLowerCase() : '';
+        
+        if (job.includes('admin') || job.includes('administrator')) {
+          role = 'admin';
+        } else if (job.includes('manager') || job.includes('supervisor')) {
+          role = 'manager';
+        } else if (job.includes('owner')) {
+          role = 'storeowner';
+        } else if (job.includes('security') || job.includes('staff') || job.includes('cleaner') || job.includes('technician') || job.includes('ground')) {
+          role = 'airportstaff';
+        } else if (job.includes('barista') || job.includes('chef') || job.includes('cashier') || job.includes('sales') || job.includes('waiter') || job.includes('waitress')) {
+          role = 'storeworker';
+        }
+      }
+
       return res.json({
         success: true,
-        user,
         role,
+        user: {
+          worker_id: worker.worker_id,
+          name: worker.name,
+          email: email,
+          job: worker.job,
+          airport_id: worker.airport_id,
+          store_id: worker.store_id,
+          role,
+        },
         message: `${role} login successful`,
       });
     }
@@ -124,7 +180,6 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 });
-
 
 // ================================================================
 // FLIGHT ROUTES
@@ -884,3 +939,410 @@ app.get("/api/passengers/:id/purchase-history", async (req, res) => {
   }
 });
 // ================================================================
+// Admin-only complex nested stats (document-like)
+app.get('/api/admin/complex-stats', requireRole('Admin'), async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        a.airport_id,
+        a.name AS airport_name,
+        COUNT(DISTINCT f.flight_number) AS total_flights,
+        COALESCE(SUM(t.price), 0) AS total_revenue,
+        COUNT(DISTINCT w.worker_id) AS total_workers,
+        (SELECT ROUND(AVG(payment),2) FROM Worker w2 WHERE w2.airport_id = a.airport_id) AS avg_salary,
+        (SELECT get_store_performance_rating(s.store_id)
+           FROM Store s WHERE s.airport_id = a.airport_id
+           ORDER BY s.updated_at DESC LIMIT 1) AS latest_store_rating
+      FROM Airport a
+      LEFT JOIN Flight f ON f.departure_airport = a.airport_id
+      LEFT JOIN Ticket t ON t.flight_number = f.flight_number AND t.booking_status='confirmed'
+      LEFT JOIN Worker w ON w.airport_id = a.airport_id AND w.status='active'
+      GROUP BY a.airport_id, a.name
+      ORDER BY total_revenue DESC
+      LIMIT 50;
+    `);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/stores", async (req, res) => {
+  const { store_id, name, place, store_type, product_type, airport_id } = req.body;
+  try {
+    await pool.query(
+      `INSERT INTO Store (store_id, name, place, store_type, product_type, airport_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [store_id, name, place, store_type, product_type, airport_id]
+    );
+    res.json({ success: true, message: "Store added successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Admin: Add new store (Admin only)
+app.post('/api/admin/stores', requireRole('Admin'), async (req, res) => {
+  const { store_id, name, place, store_type, product_type, airport_id } = req.body;
+  if (!store_id || !name || !place || !store_type || !airport_id) {
+    return res.status(400).json({ success:false, message: 'Missing required fields' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO Store (store_id, name, place, store_type, product_type, airport_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [store_id, name, place, store_type, product_type || null, airport_id]
+    );
+    res.json({ success: true, message: 'Store added (admin)' });
+  } catch (error) {
+    res.status(500).json({ success:false, error: error.message });
+  }
+});
+
+// Hire worker with role-based enforcement
+// Replace the existing /api/workers/hire endpoint in your server.js with this:
+
+// Hire worker with role-based enforcement and email support
+app.post('/api/workers/hire', async (req, res) => {
+  const callerRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+  const callerId = req.headers['x-user-id'] || null;
+
+  const { worker_id, name, email, age, job, payment, store_id, airport_id } = req.body;
+
+  try {
+    // Manager path
+    if (callerRole === 'manager') {
+      if (!store_id) return res.status(400).json({ success: false, message: 'Manager must specify store_id' });
+
+      const [[mgrRow]] = await pool.query('SELECT airport_id FROM Worker WHERE worker_id = ?', [callerId]);
+      if (!mgrRow) return res.status(403).json({ success: false, message: 'Manager identity not found' });
+
+      const [storeRows] = await pool.query('SELECT airport_id FROM Store WHERE store_id = ?', [store_id]);
+      if (storeRows.length === 0) return res.status(400).json({ success: false, message: 'Store not found' });
+
+      const storeAirport = storeRows[0].airport_id;
+      if (storeAirport !== mgrRow.airport_id) {
+        return res.status(403).json({ success: false, message: 'You can only hire for stores in your airport' });
+      }
+
+      // Call stored procedure
+      await pool.query('CALL hire_worker(?, ?, ?, ?, ?, ?, ?)', 
+        [worker_id, name, age, job, payment, store_id, storeAirport]);
+      
+      // Update email separately if provided
+      if (email) {
+        await pool.query('UPDATE Worker SET email = ? WHERE worker_id = ?', [email, worker_id]);
+      }
+
+      return res.json({ success: true, message: 'Store worker hired by manager', procedure_used: 'hire_worker' });
+    }
+
+    // Admin path or default
+    if (callerRole === 'admin' || callerRole === '') {
+      // Call stored procedure
+      await pool.query('CALL hire_worker(?, ?, ?, ?, ?, ?, ?)', 
+        [worker_id, name, age, job, payment, store_id || null, airport_id]);
+      
+      // Update email separately if provided
+      if (email) {
+        await pool.query('UPDATE Worker SET email = ? WHERE worker_id = ?', [email, worker_id]);
+      }
+
+      return res.json({ success: true, message: 'Worker hired', procedure_used: 'hire_worker' });
+    }
+
+    return res.status(403).json({ success: false, message: 'Forbidden: only Admin or Manager can hire via this endpoint' });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ================================================================
+// Replace the existing POST /api/flights endpoint with this:
+
+// Add new flight with company ID support
+app.post('/api/flights', async (req, res) => {
+  const { 
+    flight_number, 
+    departure_airport, 
+    arrival_airport, 
+    flight_date, 
+    departure_hour, 
+    arrival_hour, 
+    total_seats,
+    flight_company_id 
+  } = req.body;
+  
+  try {
+    // Call stored procedure (doesn't include flight_company_id)
+    await pool.query(
+      'CALL add_flight_schedule(?, ?, ?, ?, ?, ?, ?)',
+      [flight_number, departure_airport, arrival_airport, flight_date, departure_hour, arrival_hour, total_seats]
+    );
+    
+    // Update flight_company_id separately if provided
+    if (flight_company_id) {
+      await pool.query(
+        'UPDATE Flight SET flight_company_id = ? WHERE flight_number = ?',
+        [flight_company_id, flight_number]
+      );
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Flight added successfully',
+      procedure_used: 'add_flight_schedule'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/stores/:store_id/workers', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT * FROM Worker 
+      WHERE store_id = ? AND status = 'active'
+      ORDER BY hire_date DESC
+    `, [req.params.store_id]);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/stores/:store_id/revenue', async (req, res) => {
+  const { revenue, worker_revenue, profit_loss, notes, date } = req.body;
+  const { store_id } = req.params;
+
+  try {
+    // First, create a StoreRevenue table if it doesn't exist
+    // Then insert the revenue record
+    await pool.query(`
+      INSERT INTO StoreRevenue 
+      (store_id, revenue, worker_revenue, profit_loss, notes, revenue_date)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [store_id, revenue, worker_revenue || 0, profit_loss || 0, notes, date]);
+
+    res.json({ 
+      success: true, 
+      message: 'Revenue recorded successfully' 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/stores/:store_id/revenue', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT * FROM StoreRevenue 
+      WHERE store_id = ?
+      ORDER BY revenue_date DESC
+      LIMIT 30
+    `, [req.params.store_id]);
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/workers/:worker_id/details', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        w.*,
+        s.name as store_name,
+        a.name as airport_name
+      FROM Worker w
+      LEFT JOIN Store s ON w.store_id = s.store_id
+      JOIN Airport a ON w.airport_id = a.airport_id
+      WHERE w.worker_id = ?
+    `, [req.params.worker_id]);
+
+    if (rows.length > 0) {
+      res.json({ success: true, data: rows[0] });
+    } else {
+      res.status(404).json({ success: false, message: 'Worker not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.patch('/api/workers/:worker_id/job', requireRole('Admin'), async (req, res) => {
+  const { job, payment } = req.body;
+  const { worker_id } = req.params;
+
+  try {
+    await pool.query(`
+      UPDATE Worker 
+      SET job = ?, payment = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE worker_id = ?
+    `, [job, payment || null, worker_id]);
+
+    res.json({ 
+      success: true, 
+      message: 'Worker job updated successfully' 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+app.get('/api/airports/:airport_id/statistics', async (req, res) => {
+  try {
+    const [stats] = await pool.query(`
+      SELECT 
+        a.airport_id,
+        a.name,
+        a.city,
+        COUNT(DISTINCT s.store_id) as total_stores,
+        COUNT(DISTINCT w.worker_id) as total_workers,
+        (SELECT COUNT(*) FROM Flight WHERE departure_airport = a.airport_id) as departing_flights,
+        (SELECT COUNT(*) FROM Flight WHERE arrival_airport = a.airport_id) as arriving_flights
+      FROM Airport a
+      LEFT JOIN Store s ON a.airport_id = s.airport_id
+      LEFT JOIN Worker w ON a.airport_id = w.airport_id AND w.status = 'active'
+      WHERE a.airport_id = ?
+      GROUP BY a.airport_id
+    `, [req.params.airport_id]);
+
+    if (stats.length > 0) {
+      res.json({ success: true, data: stats[0] });
+    } else {
+      res.status(404).json({ success: false, message: 'Airport not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+// Add this endpoint to your server.js
+
+// Worker logs daily revenue
+app.post('/api/workers/revenue', async (req, res) => {
+  const { worker_id, store_id, revenue, revenue_date } = req.body;
+
+  if (!worker_id || !store_id || !revenue || !revenue_date) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Missing required fields' 
+    });
+  }
+
+  try {
+    // Insert or update worker's daily revenue contribution
+    await pool.query(`
+      INSERT INTO WorkerDailyRevenue (worker_id, store_id, revenue, revenue_date)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE revenue = revenue + VALUES(revenue)
+    `, [worker_id, store_id, parseFloat(revenue), revenue_date]);
+
+    res.json({ 
+      success: true, 
+      message: 'Revenue logged successfully' 
+    });
+  } catch (error) {
+    console.error('Error logging worker revenue:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Get worker revenue history
+app.get('/api/workers/:worker_id/revenue-history', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT revenue_date, revenue, store_id
+      FROM WorkerDailyRevenue
+      WHERE worker_id = ?
+      ORDER BY revenue_date DESC
+      LIMIT 30
+    `, [req.params.worker_id]);
+    
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get store's daily worker revenues (for store owner)
+app.get('/api/stores/:store_id/daily-worker-revenue', async (req, res) => {
+  const { date } = req.query;
+  const targetDate = date || new Date().toISOString().split('T')[0];
+
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        wdr.worker_id,
+        w.name as worker_name,
+        w.job,
+        wdr.revenue,
+        wdr.revenue_date
+      FROM WorkerDailyRevenue wdr
+      JOIN Worker w ON wdr.worker_id = w.worker_id
+      WHERE wdr.store_id = ? AND wdr.revenue_date = ?
+      ORDER BY wdr.revenue DESC
+    `, [req.params.store_id, targetDate]);
+
+    const total = rows.reduce((sum, row) => sum + parseFloat(row.revenue || 0), 0);
+
+    res.json({ 
+      success: true, 
+      data: rows,
+      total_worker_revenue: total,
+      date: targetDate
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Store owner updates store revenue with costs
+app.post('/api/stores/:store_id/daily-revenue', async (req, res) => {
+  const { store_id } = req.params;
+  const { revenue_date, total_revenue, supply_cost, other_costs, notes } = req.body;
+
+  try {
+    // Get total worker revenue for that day
+    const [workerRevenue] = await pool.query(`
+      SELECT COALESCE(SUM(revenue), 0) as total_worker_revenue
+      FROM WorkerDailyRevenue
+      WHERE store_id = ? AND revenue_date = ?
+    `, [store_id, revenue_date]);
+
+    const worker_revenue = parseFloat(workerRevenue[0].total_worker_revenue || 0);
+    const total_costs = parseFloat(supply_cost || 0) + parseFloat(other_costs || 0);
+    const profit_loss = parseFloat(total_revenue) - worker_revenue - total_costs;
+
+    // Insert into StoreRevenue table
+    await pool.query(`
+      INSERT INTO StoreRevenue 
+      (store_id, revenue, worker_revenue, profit_loss, notes, revenue_date)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        revenue = VALUES(revenue),
+        worker_revenue = VALUES(worker_revenue),
+        profit_loss = VALUES(profit_loss),
+        notes = VALUES(notes)
+    `, [store_id, total_revenue, worker_revenue, profit_loss, notes, revenue_date]);
+
+    res.json({
+      success: true,
+      message: 'Store revenue updated successfully',
+      summary: {
+        total_revenue: parseFloat(total_revenue),
+        worker_revenue,
+        total_costs,
+        profit_loss
+      }
+    });
+  } catch (error) {
+    console.error('Error updating store revenue:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});

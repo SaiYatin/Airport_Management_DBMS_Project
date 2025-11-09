@@ -104,10 +104,10 @@ const DashboardPassenger = () => {
           <p className="text-sm text-muted-foreground mt-1">
             Passenger ID: {user.passenger_id} | Email: {user.email}
           </p>
-          <p className="text-muted-foreground mt-2">
-            Your loyalty tier:{" "}
+          <div className="text-muted-foreground mt-2">
+            Your loyalty tier:
             <Badge className="ml-2">{loyalty || "Standard"}</Badge>
-          </p>
+          </div>
         </div>
 
         <Card>

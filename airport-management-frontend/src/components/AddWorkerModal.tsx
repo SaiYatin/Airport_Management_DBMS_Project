@@ -22,19 +22,7 @@ const AddWorkerModal = ({ onClose, onWorkerAdded }: AddWorkerModalProps) => {
     setLoading(true);
     const worker_id = `W${Date.now()}`;
     try {
-      const res = await fetch("http://localhost:3001/api/workers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          worker_id,
-          name,
-          age,
-          job,
-          payment,
-          store_id: null,
-          airport_id: airportId,
-        }),
-      });
+      
       const data = await res.json();
       if (data.success) {
         toast.success("✅ Worker added successfully!");
