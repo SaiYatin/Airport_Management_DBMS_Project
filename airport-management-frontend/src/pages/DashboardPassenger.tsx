@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useNavigate } from "react-router-dom";
-import { Plane, Ticket, Award, LogOut } from "lucide-react";
+import { Plane, Ticket, Award, LogOut, X, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
 const DashboardPassenger = () => {
@@ -14,8 +17,21 @@ const DashboardPassenger = () => {
   const [loyalty, setLoyalty] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // Cancel ticket modal state
+  const [cancelDialog, setCancelDialog] = useState({
+    open: false,
+    booking: null,
+    reason: ""
+  });
+  const [cancelling, setCancelling] = useState(false);
+
+  // Ticket details modal state
+  const [detailsDialog, setDetailsDialog] = useState({
+    open: false,
+    booking: null
+  });
+
   useEffect(() => {
-    // Wait for user to be available
     if (!user?.passenger_id) {
       setLoading(false);
       navigate("/login");
@@ -45,7 +61,7 @@ const DashboardPassenger = () => {
           console.log(`✅ Loaded ${bookingData.data.length} bookings`);
         }
       } catch (error: any) {
-        if (error.name === "AbortError") return; // prevents stale update
+        if (error.name === "AbortError") return;
         console.error("❌ Error loading passenger data:", error);
         toast.error("Failed to load passenger data");
       } finally {
@@ -55,7 +71,6 @@ const DashboardPassenger = () => {
 
     loadPassengerData();
 
-    // Cleanup: cancel fetches if user changes quickly
     return () => {
       controller.abort();
     };
@@ -64,6 +79,67 @@ const DashboardPassenger = () => {
   const handleLogout = () => {
     localStorage.removeItem("user");
     navigate("/login");
+  };
+
+  const handleOpenDetails = (booking: any) => {
+    setDetailsDialog({ open: true, booking });
+  };
+
+  const handleOpenCancelDialog = (booking: any) => {
+    setDetailsDialog({ open: false, booking: null });
+    setCancelDialog({ open: true, booking, reason: "" });
+  };
+
+  const handleCancelTicket = async () => {
+    if (!cancelDialog.reason.trim()) {
+      toast.error("Please provide a cancellation reason");
+      return;
+    }
+
+    if (!cancelDialog.booking?.order_number) {
+      toast.error("Invalid ticket order number");
+      return;
+    }
+
+    try {
+      setCancelling(true);
+
+      const res = await fetch(`http://localhost:3001/api/tickets/${cancelDialog.booking.order_number}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelDialog.reason })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        toast.error(data.message || data.error || "Failed to cancel ticket");
+        return;
+      }
+
+      const refundAmount = (cancelDialog.booking.price * 0.80).toLocaleString();
+      
+      toast.success(
+        `✅ Ticket cancelled successfully! Refund of ₹${refundAmount} (80%) will be processed.`,
+        { duration: 5000 }
+      );
+
+      setCancelDialog({ open: false, booking: null, reason: "" });
+
+      // Reload bookings
+      const passengerId = user.passenger_id;
+      const bookingRes = await fetch(`http://localhost:3001/api/passengers/${passengerId}/bookings`);
+      const bookingData = await bookingRes.json();
+      if (bookingData.success) {
+        setBookings(bookingData.data);
+      }
+
+    } catch (error: any) {
+      console.error("❌ Error cancelling ticket:", error);
+      toast.error("Server error while cancelling ticket");
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (loading) {
@@ -130,7 +206,8 @@ const DashboardPassenger = () => {
                 {bookings.map((b: any) => (
                   <div
                     key={b.order_number}
-                    className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                    onClick={() => handleOpenDetails(b)}
+                    className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-pointer"
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
@@ -179,49 +256,173 @@ const DashboardPassenger = () => {
             </p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Ticket className="h-5 w-5 text-primary" />
-              Purchase History
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {bookings.length === 0 ? (
-              <p className="text-muted-foreground">No purchases found.</p>
-            ) : (
-              <div className="space-y-3">
-                {bookings.map((b: any) => (
-                  <div
-                    key={b.order_number}
-                    className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <p className="font-semibold">
-                          Flight {b.flight_number} • {b.company_name}
-                        </p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {b.departure_airport} → {b.arrival_airport}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          Purchased on: {b.purchased_on}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          Seat: {b.seat_class} | ₹{b.price.toLocaleString()}
-                        </p>
-                      </div>
-                      <Badge variant="secondary">
-                        {b.booked_via || "Direct"}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </main>
+
+      {/* Ticket Details Dialog */}
+      <Dialog open={detailsDialog.open} onOpenChange={(open) => !open && setDetailsDialog({ open: false, booking: null })}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Ticket Details</DialogTitle>
+            <DialogDescription>
+              Order: {detailsDialog.booking?.order_number}
+            </DialogDescription>
+          </DialogHeader>
+          {detailsDialog.booking && (
+            <div className="space-y-4 py-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Flight</p>
+                  <p className="font-semibold">{detailsDialog.booking.flight_number}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Status</p>
+                  <Badge variant={detailsDialog.booking.booking_status === "confirmed" ? "default" : "secondary"}>
+                    {detailsDialog.booking.booking_status}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Route</p>
+                  <p className="font-semibold">{detailsDialog.booking.departure_airport} → {detailsDialog.booking.arrival_airport}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Date</p>
+                  <p className="font-semibold">{new Date(detailsDialog.booking.flight_date).toLocaleDateString()}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Seat</p>
+                  <p className="font-semibold">{detailsDialog.booking.seat_number}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Class</p>
+                  <p className="font-semibold">{detailsDialog.booking.seat_class}</p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-muted rounded-lg">
+                <p className="text-sm text-muted-foreground">Total Price</p>
+                <p className="text-2xl font-bold">₹{detailsDialog.booking.price.toLocaleString()}</p>
+              </div>
+
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                <p className="text-sm text-muted-foreground">Booked On</p>
+                <p className="font-medium">{new Date(detailsDialog.booking.booking_date).toLocaleString()}</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => setDetailsDialog({ open: false, booking: null })}>
+              Close
+            </Button>
+            {detailsDialog.booking?.booking_status === "confirmed" && (
+              <Button 
+                variant="destructive" 
+                onClick={() => handleOpenCancelDialog(detailsDialog.booking)}
+                className="gap-2"
+              >
+                <X className="h-4 w-4" />
+                Cancel Ticket
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Ticket Dialog */}
+      <Dialog open={cancelDialog.open} onOpenChange={(open) => !open && setCancelDialog({ open: false, booking: null, reason: "" })}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertCircle className="h-5 w-5" />
+              Cancel Ticket
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to cancel this ticket? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {cancelDialog.booking && (
+            <div className="space-y-4 py-4">
+              <div className="p-4 bg-muted rounded-lg space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Order Number:</span>
+                  <span className="font-semibold">{cancelDialog.booking.order_number}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Flight:</span>
+                  <span className="font-semibold">{cancelDialog.booking.flight_number}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Route:</span>
+                  <span className="font-semibold">{cancelDialog.booking.departure_airport} → {cancelDialog.booking.arrival_airport}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Seat:</span>
+                  <span className="font-semibold">{cancelDialog.booking.seat_number} ({cancelDialog.booking.seat_class})</span>
+                </div>
+              </div>
+
+              <div className="p-4 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-medium">Original Amount:</span>
+                  <span className="font-bold">₹{cancelDialog.booking.price.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-green-700 dark:text-green-400">Refund Amount (80%):</span>
+                  <span className="font-bold text-green-700 dark:text-green-400">
+                    ₹{(cancelDialog.booking.price * 0.80).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cancel-reason">
+                  Cancellation Reason <span className="text-destructive">*</span>
+                </Label>
+                <Textarea
+                  id="cancel-reason"
+                  placeholder="Please provide a reason for cancellation (e.g., Change of plans, Emergency, etc.)"
+                  value={cancelDialog.reason}
+                  onChange={(e) => setCancelDialog({ ...cancelDialog, reason: e.target.value })}
+                  rows={4}
+                  className="resize-none"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => setCancelDialog({ open: false, booking: null, reason: "" })}
+              disabled={cancelling}
+            >
+              Keep Ticket
+            </Button>
+            <Button 
+              variant="destructive" 
+              onClick={handleCancelTicket}
+              disabled={cancelling || !cancelDialog.reason.trim()}
+              className="gap-2"
+            >
+              {cancelling ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+                  Cancelling...
+                </>
+              ) : (
+                <>
+                  <X className="h-4 w-4" />
+                  Confirm Cancellation
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
